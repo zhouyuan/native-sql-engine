@@ -49,11 +49,12 @@ jobs:
           mvn clean install -B -Dorg.slf4j.simpleLogger.log.org.apache.maven.cli.transfer.Slf4jMavenTransferListener=warn -P arrow-jni -am -Darrow.cpp.build.dir=/tmp/arrow/cpp/build/release/ -DskipTests -Dcheckstyle.skip
       - name: Install Arrow datasource
         run: |
+          cd /tmp
+          git clone https://github.com/oap-project/arrow-data-source.git
+          cd arrow-data-source
           mvn clean install -B -Dorg.slf4j.simpleLogger.log.org.apache.maven.cli.transfer.Slf4jMavenTransferListener=warn
       - run: |
-          cd /tmp
-          git clone https://github.com/oap-project/native-sql-engine.git
-          cd native-sql-engine/core/
+          cd core/
           mvn test -B -Dorg.slf4j.simpleLogger.log.org.apache.maven.cli.transfer.Slf4jMavenTransferListener=warn -DmembersOnlySuites=com.intel.oap.tpch -DtagsToInclude=com.intel.oap.tags.TestAndWriteLogs
         env:
           MAVEN_OPTS: "-Xmx2048m"
