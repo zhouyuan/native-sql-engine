@@ -389,7 +389,7 @@ static arrow::Status DecodeIndices(std::shared_ptr<arrow::Array> in, std::vector
 
 arrow::Status WindowRankKernel::SortToIndicesPrepare(std::vector<ArrayList> values) {
 #ifdef DEBUG
-  std::cout << "RANK: values to sort: " << values.at(0)->ToString() << std::endl;
+  //std::cout << "RANK: values to sort: " << values.at(0)->ToString() << std::endl;
 #endif
   for (auto each_batch : values) {
     RETURN_NOT_OK(sorter_->Evaluate(each_batch));
@@ -401,7 +401,7 @@ arrow::Status WindowRankKernel::SortToIndicesPrepare(std::vector<ArrayList> valu
 arrow::Status WindowRankKernel::SortToIndicesFinish(std::vector<std::shared_ptr<ArrayItemIndex>> elements_to_sort,
                                                     std::vector<std::shared_ptr<ArrayItemIndex>> *offsets) {
 #ifdef DEBUG
-  std::cout << "RANK: partition: " << elements_to_sort->ToString() << std::endl;
+  //std::cout << "RANK: partition: " << elements_to_sort->ToString() << std::endl;
 #endif
   std::shared_ptr<arrow::Array> in;
   std::shared_ptr<arrow::Array> out;
@@ -411,7 +411,7 @@ arrow::Status WindowRankKernel::SortToIndicesFinish(std::vector<std::shared_ptr<
   RETURN_NOT_OK(DecodeIndices(out, &decoded_out));
   *offsets = decoded_out;
 #ifdef DEBUG
-  std::cout << "RANK: partition sorted: " << out->ToString() << std::endl;
+  //std::cout << "RANK: partition sorted: " << out->ToString() << std::endl;
 #endif
   return arrow::Status::OK();
   // todo sort algorithm

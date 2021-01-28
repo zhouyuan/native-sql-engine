@@ -36,6 +36,7 @@
 #include <iostream>
 #include <memory>
 
+#include "array_appender.h"
 #include "codegen/arrow_compute/ext/array_item_index.h"
 #include "codegen/arrow_compute/ext/code_generator_base.h"
 #include "codegen/arrow_compute/ext/codegen_common.h"
@@ -51,9 +52,319 @@ namespace extra {
 
 using ArrayList = std::vector<std::shared_ptr<arrow::Array>>;
 
-///////////////  ConditionedJoinArrays  ////////////////
+///////////////Operator  SMJ  ////////////////
+class ConditionedJoinKernel::Impl {
+ public:
+  Impl() {}
+  Impl(arrow::compute::FunctionContext* ctx,
+       const gandiva::NodeVector& left_key_node_list,
+       const gandiva::NodeVector& right_key_node_list,
+       const gandiva::NodeVector& left_schema_node_list,
+       const gandiva::NodeVector& right_schema_node_list,
+       const gandiva::NodePtr& condition, int join_type,
+       const gandiva::NodeVector& result_node_list,
+       const gandiva::NodeVector& hash_configuration_list, int hash_relation_idx): ctx_(ctx),
+        join_type_(join_type), condition_(condition) {
+       }
+  virtual ~Impl() {}
+  virtual arrow::Status Evaluate(const ArrayList& in) {
+    return arrow::Status::OK();
+  }
+
+  std::string GetSignature() { return ""; }
+
+  arrow::Status MakeResultIterator(
+      std::shared_ptr<arrow::Schema> schema,
+      std::shared_ptr<ResultIterator<arrow::RecordBatch>>* out) {
+    return arrow::Status::OK();
+  }
+
+   arrow::Status DoCodeGen(
+      int level,
+      std::vector<std::pair<std::pair<std::string, std::string>, gandiva::DataTypePtr>>
+          input,
+      std::shared_ptr<CodeGenContext>* codegen_ctx_out, int* var_id) {
+    return arrow::Status::OK();
+  }
+
+ private:
+  arrow::compute::FunctionContext* ctx_;
+  arrow::MemoryPool* pool_;
+  std::string signature_;
+  int join_type_;
+  gandiva::NodePtr condition_;
+
+};
+
+arrow::Status ConditionedJoinKernel::Make(
+    arrow::compute::FunctionContext* ctx, const gandiva::NodeVector& left_key_list,
+    const gandiva::NodeVector& right_key_list,
+    const gandiva::NodeVector& left_schema_list,
+    const gandiva::NodeVector& right_schema_list, const gandiva::NodePtr& condition,
+    int join_type, const gandiva::NodeVector& result_schema,
+    const gandiva::NodeVector& hash_configuration_list, int hash_relation_idx,
+    std::shared_ptr<KernalBase>* out) {
+  *out = std::make_shared<ConditionedJoinKernel>(
+      ctx, left_key_list, right_key_list, left_schema_list, right_schema_list, condition,
+      join_type, result_schema, hash_configuration_list, hash_relation_idx);
+  return arrow::Status::OK();
+}
+
+
+template<typename ArrowType>
+class TypedJoinKernel : public ConditionedJoinKernel::Impl {
+ public:
+  TypedJoinKernel(arrow::compute::FunctionContext* ctx,
+                  const gandiva::NodeVector& left_key_node_list,
+                  const gandiva::NodeVector& right_key_node_list,
+                  const gandiva::NodeVector& left_schema_node_list,
+                  const gandiva::NodeVector& right_schema_node_list,
+                  const gandiva::NodePtr& condition, int join_type,
+                  const gandiva::NodeVector& result_node_list,
+                  const gandiva::NodeVector& hash_configuration_list,
+                  int hash_relation_idx)
+      : ctx_(ctx), join_type_(join_type), condition_(condition) {
+    for (auto node : left_schema_node_list) {
+      left_field_list_.push_back(
+          std::dynamic_pointer_cast<gandiva::FieldNode>(node)->field());
+    }
+    for (auto node : right_schema_node_list) {
+      right_field_list_.push_back(
+          std::dynamic_pointer_cast<gandiva::FieldNode>(node)->field());
+    }
+    for (auto node : result_node_list) {
+      result_schema_.push_back(
+          std::dynamic_pointer_cast<gandiva::FieldNode>(node)->field());
+    }
+    result_schema = std::make_shared<arrow::Schema>(result_schema_);
+    
+  }
+
+  arrow::Status Evaluate(const ArrayList& in) override {
+    col_num_ = result_schema->num_fields();
+    for (int i = 0; i < col_num_; i++) {
+      cached_[i].push_back(in[i]);
+    }
+    auto typed_array_0 = std::dynamic_pointer_cast<ArrayType>(in[0]);
+    left_list_.emplace_back(typed_array_0);
+    idx_to_arrarid_.push_back(typed_array_0->length());
+    return arrow::Status::OK();
+  }
+
+  std::string GetSignature() { return ""; }
+
+  arrow::Status MakeResultIterator(
+      std::shared_ptr<arrow::Schema> schema,
+      std::shared_ptr<ResultIterator<arrow::RecordBatch>>* out) {
+    return arrow::Status::OK();
+  }
+
+  arrow::Status DoCodeGen(
+      int level,
+      std::vector<std::pair<std::pair<std::string, std::string>, gandiva::DataTypePtr>>
+          input,
+      std::shared_ptr<CodeGenContext>* codegen_ctx_out, int* var_id) {
+    return arrow::Status::OK();
+  }
+
+ private:
+  using ArrayType = typename arrow::TypeTraits<ArrowType>::ArrayType;
+  arrow::compute::FunctionContext* ctx_;
+  arrow::MemoryPool* pool_;
+  std::string signature_;
+  int join_type_;
+  gandiva::NodePtr condition_;
+  gandiva::FieldVector left_field_list_;
+  gandiva::FieldVector right_field_list_;
+  gandiva::FieldVector result_schema_;
+  std::vector<int> right_key_index_list_;
+  std::vector<int> left_shuffle_index_list_;
+  std::vector<int> right_shuffle_index_list_;
+  std::vector<std::shared_ptr<ArrayType>> left_list_;
+  std::vector<int64_t> idx_to_arrarid_;
+  int col_num_;
+  std::vector<arrow::ArrayVector> cached_;
+  std::shared_ptr<arrow::Schema> result_schema;
+
+  class FVector {
+    using ViewType = decltype(std::declval<ArrayType>().GetView(0));
+
+   public:
+    FVector(std::vector<std::shared_ptr<ArrayType>>* left_list,
+            std::vector<int64_t> segment_info) {
+      left_list_ = left_list;
+      total_len_ = std::accumulate(segment_info.begin(), segment_info.end(), 0);
+      segment_info_ = segment_info;
+      it = (*left_list_)[0];
+      segment_len = 0;
+    }
+
+    void getpos(int64_t* cur_idx, int64_t* cur_segmeng_len, int64_t* passlen) {
+      *cur_idx = idx;
+      *cur_segmeng_len = segment_len;
+      *passlen = passed_len;
+    }
+
+    void setpos(int64_t cur_idx, int64_t cur_segment_len, int64_t cur_passed_len) {
+      idx = cur_idx;
+      it = (*left_list_)[idx];
+      segment_len = cur_segment_len;
+      passed_len = cur_passed_len;
+    }
+
+    ViewType value() { return it->GetView(segment_len); }
+
+    bool hasnext() { return (passed_len <= total_len_ - 1); }
+
+    void next() {
+      segment_len++;
+      if (segment_len == segment_info_[idx] && passed_len != total_len_ - 1) {
+        idx++;
+        segment_len = 0;
+        it = (*left_list_)[idx];
+      }
+      passed_len++;
+    }
+
+   public:
+    std::vector<std::shared_ptr<ArrayType>>* left_list_;
+    int64_t total_len_;
+    std::vector<int64_t> segment_info_;
+
+    int64_t idx = 0;
+    int64_t passed_len = 0;
+    int64_t segment_len = 0;
+    std::shared_ptr<ArrayType> it;
+  };
+    class ProberResultIterator : public ResultIterator<arrow::RecordBatch> {
+   public:
+    ProberResultIterator(arrow::compute::FunctionContext* ctx,
+                         std::shared_ptr<arrow::Schema> schema,
+                         std::vector<std::shared_ptr<ArrayType>>* left_list,
+                         std::vector<int64_t>* idx_to_arrarid,
+                         std::vector<arrow::ArrayVector> cached_in)
+        : ctx_(ctx),
+          result_schema_(schema),
+          left_list_(left_list),
+          last_pos(0),
+          idx_to_arrarid_(idx_to_arrarid),
+          cached_in_(cached_in) {
+      AppenderBase::AppenderType appender_type = AppenderBase::left;
+      for (int i = 0; i < col_num_; i++) {
+        auto field = schema->field(i);
+        std::shared_ptr<AppenderBase> appender;
+        MakeAppender(ctx_, field->type(), appender_type, &appender);
+        appender_list_.push_back(appender);
+      }
+      for (int i = 0; i < col_num_; i++) {
+        arrow::ArrayVector array_vector = cached_in_[i];
+        int array_num = array_vector.size();
+        for (int array_id = 0; array_id < array_num; array_id++) {
+          auto arr = array_vector[array_id];
+          appender_list_[i]->AddArray(arr);
+        }
+      }
+      left_it = std::make_shared<FVector>(left_list_, *idx_to_arrarid_);
+    }
+
+    ArrayItemIndex GetArrayItemIdex(std::shared_ptr<FVector> left_it) {
+      int64_t local_arrayid, local_seglen, local_pl;
+      left_it->getpos(&local_arrayid, &local_seglen, &local_pl);
+      return ArrayItemIndex(local_arrayid, local_seglen);
+    }
+
+    arrow::Status Process(const ArrayList& in, std::shared_ptr<arrow::RecordBatch>* out,
+                          const std::shared_ptr<arrow::Array>& selection) override {
+      uint64_t out_length = 0;
+      auto typed_array_0 = std::dynamic_pointer_cast<ArrayType>(in[0]);
+      auto length = typed_array_0->length();
+      for (int i = 0; i < length; i++) {
+        auto right_content = typed_array_0->GetView(i);
+        while (left_it->hasnext() && left_it->value() < right_content) {
+          left_it->next();
+        }
+        while (left_it->hasnext() && left_it->value() == right_content) {
+          auto item = GetArrayItemIdex(left_it);
+
+          for (auto& appender : appender_list_) {
+            RETURN_NOT_OK(appender->Append(item->array_id, item->id));
+          }
+          out_length += 1;
+        }
+      }
+      ArrayList arrays;
+      for (auto& appender : appender_list_) {
+        std::shared_ptr<arrow::Array> out_array;
+        RETURN_NOT_OK(appender->Finish(&out_array));
+        arrays.push_back(out_array);
+        appender->Reset();
+      }
+
+      *out = arrow::RecordBatch::Make(result_schema_, out_length, arrays);
+      return arrow::Status::OK();
+    }
+
+   private:
+    arrow::compute::FunctionContext* ctx_;
+    std::shared_ptr<arrow::Schema> result_schema_;
+    std::vector<std::shared_ptr<ArrayType>>* left_list_;
+    std::shared_ptr<FVector> left_it;
+    int64_t last_pos;
+    int64_t last_idx = 0;
+    int64_t last_seg = 0;
+    int64_t last_pl = 0;
+    std::vector<int64_t>* idx_to_arrarid_;
+    std::vector<arrow::ArrayVector> cached_in_;
+    std::vector<std::shared_ptr<AppenderBase>> appender_list_;
+  };
+};
+
+
+ConditionedJoinKernel::ConditionedJoinKernel(
+    arrow::compute::FunctionContext* ctx, const gandiva::NodeVector& left_key_list,
+    const gandiva::NodeVector& right_key_list,
+    const gandiva::NodeVector& left_schema_list,
+    const gandiva::NodeVector& right_schema_list, const gandiva::NodePtr& condition,
+    int join_type, const gandiva::NodeVector& result_schema,
+    const gandiva::NodeVector& hash_configuration_list, int hash_relation_idx) {
+  if (left_key_list.size() == 1 && right_key_list.size() == 1) {
+    impl_.reset(new TypedJoinKernel<arrow::UInt32Type>(
+        ctx, left_key_list, right_key_list, left_schema_list,
+                       right_schema_list, condition, join_type, result_schema,
+                       hash_configuration_list, hash_relation_idx));
+  } else {
+  impl_.reset(new Impl(ctx, left_key_list, right_key_list, left_schema_list,
+                       right_schema_list, condition, join_type, result_schema,
+                       hash_configuration_list, hash_relation_idx));
+  }
+  kernel_name_ = "ConditionedJoinKernel";
+}
+
+arrow::Status ConditionedJoinKernel::MakeResultIterator(
+    std::shared_ptr<arrow::Schema> schema,
+    std::shared_ptr<ResultIterator<arrow::RecordBatch>>* out) {
+  return impl_->MakeResultIterator(schema, out);
+}
+
+std::string ConditionedJoinKernel::GetSignature() { return impl_->GetSignature(); }
+
+arrow::Status ConditionedJoinKernel::DoCodeGen(
+    int level,
+    std::vector<std::pair<std::pair<std::string, std::string>, gandiva::DataTypePtr>>
+        input,
+    std::shared_ptr<CodeGenContext>* codegen_ctx_out, int* var_id) {
+  return impl_->DoCodeGen(level, input, codegen_ctx_out, var_id);
+}
+
+arrow::Status ConditionedJoinKernel::Evaluate(const ArrayList& in) {
+  return impl_->Evaluate(in);
+}
+
+
+///////////////Codegen  SMJ  ////////////////
 class ConditionedJoinArraysKernel::Impl {
  public:
+  Impl() {}
   Impl(arrow::compute::FunctionContext* ctx,
        const std::vector<std::shared_ptr<arrow::Field>>& left_key_list,
        const std::vector<std::shared_ptr<arrow::Field>>& right_key_list,
@@ -84,12 +395,12 @@ class ConditionedJoinArraysKernel::Impl {
         right_field_list, result_schema_index_list, exist_index, &prober_));
   }
 
-  arrow::Status Evaluate(const ArrayList& in) {
+  virtual arrow::Status Evaluate(const ArrayList& in) {
     RETURN_NOT_OK(prober_->Evaluate(in));
     return arrow::Status::OK();
   }
 
-  arrow::Status MakeResultIterator(
+  virtual arrow::Status MakeResultIterator(
       std::shared_ptr<arrow::Schema> schema,
       std::shared_ptr<ResultIterator<arrow::RecordBatch>>* out) {
     RETURN_NOT_OK(prober_->MakeResultIterator(schema, out));
@@ -453,7 +764,6 @@ class ConditionedJoinArraysKernel::Impl {
       ss << "  RETURN_NOT_OK(builder_1_" << i << "_->Append(cached_1_" << i
          << "_->GetView(i)));" << std::endl;
       ss << "}" << std::endl;
-
     }
     std::string shuffle_str;
     if (cond_check) {
@@ -481,7 +791,7 @@ class ConditionedJoinArraysKernel::Impl {
       right_value += "item_content{";
       for (auto i = 0; i < right_key_index_list.size(); i++) {
         right_value += "typed_array_" + std::to_string(i) + "->GetView(i)";
-        if (i != right_key_index_list.size() -1) {
+        if (i != right_key_index_list.size() - 1) {
           right_value += ",";
         }
       }
@@ -514,7 +824,8 @@ class ConditionedJoinArraysKernel::Impl {
     std::stringstream left_valid_ss;
     std::stringstream right_valid_ss;
     for (auto i : left_shuffle_index_list) {
-      left_valid_ss << "if (cached_0_" << i << "_[tmp.array_id]->null_count()) {" << std::endl;
+      left_valid_ss << "if (cached_0_" << i << "_[tmp.array_id]->null_count()) {"
+                    << std::endl;
       left_valid_ss << "if (cached_0_" << i << "_[tmp.array_id]->IsNull(tmp.id)) {"
                     << std::endl;
       left_valid_ss << "  RETURN_NOT_OK(builder_0_" << i << "_->AppendNull());"
@@ -540,9 +851,8 @@ class ConditionedJoinArraysKernel::Impl {
       right_valid_ss << "}" << std::endl;
       right_valid_ss << "} else {" << std::endl;
       right_valid_ss << "  RETURN_NOT_OK(builder_1_" << i << "_->Append(cached_1_" << i
-         << "_->GetView(i)));" << std::endl;
+                     << "_->GetView(i)));" << std::endl;
       right_valid_ss << "}" << std::endl;
-
     }
     std::string shuffle_str;
     if (cond_check) {
@@ -566,7 +876,7 @@ class ConditionedJoinArraysKernel::Impl {
       right_value += "item_content{";
       for (auto i = 0; i < right_key_index_list.size(); i++) {
         right_value += "typed_array_" + std::to_string(i) + "->GetView(i)";
-        if (i != right_key_index_list.size() -1) {
+        if (i != right_key_index_list.size() - 1) {
           right_value += ",";
         }
       }
@@ -621,15 +931,16 @@ class ConditionedJoinArraysKernel::Impl {
   )";
   }
   std::string GetFullOuterJoin(bool cond_check,
-                           const std::vector<int>& left_shuffle_index_list,
-                           const std::vector<int>& right_shuffle_index_list,
-                           const std::vector<int>& right_key_index_list) {
+                               const std::vector<int>& left_shuffle_index_list,
+                               const std::vector<int>& right_shuffle_index_list,
+                               const std::vector<int>& right_key_index_list) {
     std::stringstream left_null_ss;
     std::stringstream right_null_ss;
     std::stringstream left_valid_ss;
     std::stringstream right_valid_ss;
     for (auto i : left_shuffle_index_list) {
-      left_valid_ss << "if (cached_0_" << i << "_[tmp.array_id]->null_count()) {" << std::endl;
+      left_valid_ss << "if (cached_0_" << i << "_[tmp.array_id]->null_count()) {"
+                    << std::endl;
       left_valid_ss << "if (cached_0_" << i << "_[tmp.array_id]->IsNull(tmp.id)) {"
                     << std::endl;
       left_valid_ss << "  RETURN_NOT_OK(builder_0_" << i << "_->AppendNull());"
@@ -655,10 +966,10 @@ class ConditionedJoinArraysKernel::Impl {
       right_valid_ss << "}" << std::endl;
       right_valid_ss << "} else {" << std::endl;
       right_valid_ss << "  RETURN_NOT_OK(builder_1_" << i << "_->Append(cached_1_" << i
-         << "_->GetView(i)));" << std::endl;
+                     << "_->GetView(i)));" << std::endl;
       right_valid_ss << "}" << std::endl;
-      right_null_ss << "RETURN_NOT_OK(builder_1_" << i << "_->AppendNull());" << std::endl;
-
+      right_null_ss << "RETURN_NOT_OK(builder_1_" << i << "_->AppendNull());"
+                    << std::endl;
     }
     std::string shuffle_str;
     if (cond_check) {
@@ -682,7 +993,7 @@ class ConditionedJoinArraysKernel::Impl {
       right_value += "item_content{";
       for (auto i = 0; i < right_key_index_list.size(); i++) {
         right_value += "typed_array_" + std::to_string(i) + "->GetView(i)";
-        if (i != right_key_index_list.size() -1) {
+        if (i != right_key_index_list.size() - 1) {
           right_value += ",";
         }
       }
@@ -747,9 +1058,8 @@ class ConditionedJoinArraysKernel::Impl {
       right_valid_ss << "}" << std::endl;
       right_valid_ss << "} else {" << std::endl;
       right_valid_ss << "  RETURN_NOT_OK(builder_1_" << i << "_->Append(cached_1_" << i
-         << "_->GetView(i)));" << std::endl;
+                     << "_->GetView(i)));" << std::endl;
       right_valid_ss << "}" << std::endl;
-
     }
     std::string shuffle_str;
     if (cond_check) {
@@ -845,10 +1155,10 @@ class ConditionedJoinArraysKernel::Impl {
     }
     std::string right_value;
     if (right_key_index_list.size() > 1) {
-            right_value += "item_content{";
+      right_value += "item_content{";
       for (auto i = 0; i < right_key_index_list.size(); i++) {
         right_value += "typed_array_" + std::to_string(i) + "->GetView(i)";
-        if (i != right_key_index_list.size() -1) {
+        if (i != right_key_index_list.size() - 1) {
           right_value += ",";
         }
       }
@@ -857,7 +1167,8 @@ class ConditionedJoinArraysKernel::Impl {
       right_value = "typed_array_0->GetView(i)";
     }
     return R"(
-      auto right_content = )" + right_value + R"(;
+      auto right_content = )" +
+           right_value + R"(;
              if (!typed_array_0->IsNull(i)) {
   while (left_it->hasnext() && left_it->value() < right_content) {
     left_it->next();
@@ -914,10 +1225,10 @@ class ConditionedJoinArraysKernel::Impl {
     }
     std::string right_value;
     if (right_key_index_list.size() > 1) {
-            right_value += "item_content{";
+      right_value += "item_content{";
       for (auto i = 0; i < right_key_index_list.size(); i++) {
         right_value += "typed_array_" + std::to_string(i) + "->GetView(i)";
-        if (i != right_key_index_list.size() -1) {
+        if (i != right_key_index_list.size() - 1) {
           right_value += ",";
         }
       }
@@ -927,7 +1238,8 @@ class ConditionedJoinArraysKernel::Impl {
     }
     return R"(
         // existence join
-        auto right_content = )" + right_value + R"(;
+        auto right_content = )" +
+           right_value + R"(;
         if (!typed_array_0->IsNull(i)) {
           while (left_it->hasnext() && left_it->value() < right_content) {
             left_it->next();
@@ -946,7 +1258,8 @@ class ConditionedJoinArraysKernel::Impl {
             if (last_match_idx == i) {
             continue;
             }
-            )" + right_valid_ss.str() + right_not_exist_ss.str() + R"(
+            )" +
+           right_valid_ss.str() + right_not_exist_ss.str() + R"(
             out_length += 1;
           }
           if (!left_it->hasnext()) {
@@ -967,14 +1280,15 @@ class ConditionedJoinArraysKernel::Impl {
                             right_key_index_list);
       } break;
       case 1: { /*Outer Join*/
-        return GetOuterJoin(cond_check, left_shuffle_index_list,
-                            right_shuffle_index_list, right_key_index_list);
+        return GetOuterJoin(cond_check, left_shuffle_index_list, right_shuffle_index_list,
+                            right_key_index_list);
       } break;
       case 2: { /*Anti Join*/
         return GetAntiJoin(cond_check, left_shuffle_index_list, right_shuffle_index_list);
       } break;
       case 3: { /*Semi Join*/
-        return GetSemiJoin(cond_check, left_shuffle_index_list, right_shuffle_index_list, right_key_index_list);
+        return GetSemiJoin(cond_check, left_shuffle_index_list, right_shuffle_index_list,
+                           right_key_index_list);
       } break;
       case 4: { /*Existence Join*/
         return GetExistenceJoin(cond_check, left_shuffle_index_list,
@@ -1093,8 +1407,7 @@ class ConditionedJoinArraysKernel::Impl {
     std::string tuple_str;
     if (multiple_cols) {
       for (int i = 0; i < size; i++) {
-        std::string local_tuple =
-            "typed_array_" + std::to_string(i) + ",";
+        std::string local_tuple = "typed_array_" + std::to_string(i) + ",";
         tuple_str += local_tuple;
       }
     } else {
@@ -1117,7 +1430,6 @@ class ConditionedJoinArraysKernel::Impl {
       tuple_str.erase(tuple_str.end() - 1, tuple_str.end());
       ss << std::endl << "return {" + tuple_str + "};" << std::endl;
     } else {
-
       ss << std::endl << "return it->GetView(segment_len);" << std::endl;
     }
     return ss.str();
@@ -1182,10 +1494,12 @@ class ConditionedJoinArraysKernel::Impl {
       item_content_str = "nonstd::sv_lite::string_view";
     }
     list_tiem_str = R"(
-typedef  std::shared_ptr<)" + hash_map_type_str +
+typedef  std::shared_ptr<)" +
+                    hash_map_type_str +
                     R"(> list_item;
-typedef )" + item_content_str + " item_content;";
-    
+typedef )" + item_content_str +
+                    " item_content;";
+
     std::vector<std::string> tuple_types;
     std::vector<std::string> content_tuple_types;
 
@@ -1194,7 +1508,8 @@ typedef )" + item_content_str + " item_content;";
         #include <tuple>)";
 
       for (auto& key : left_key_index_list) {
-        tuple_types.push_back("std::shared_ptr<" + GetTypeString(left_field_list[key]->type(), "Array") + ">");
+        tuple_types.push_back("std::shared_ptr<" +
+                              GetTypeString(left_field_list[key]->type(), "Array") + ">");
         content_tuple_types.push_back(GetCTypeString(left_field_list[key]->type()));
       }
 
@@ -1205,11 +1520,11 @@ typedef )" + item_content_str + " item_content;";
       }
       // remove the ending ','
       tuple_define_str.erase(tuple_define_str.end() - 1, tuple_define_str.end());
-      
+
       std::string content_define_str = "std::tuple<";
       for (auto type : content_tuple_types) {
         if (type == "std::string") {
-           type = "nonstd::sv_lite::string_view";
+          type = "nonstd::sv_lite::string_view";
         }
 
         content_define_str += type;
@@ -1221,7 +1536,8 @@ typedef )" + item_content_str + " item_content;";
       list_tiem_str += R"(
         typedef )" + tuple_define_str +
                        R"(> list_item;
-        typedef )" + content_define_str + "> item_content;";
+        typedef )" + content_define_str +
+                       "> item_content;";
     } else {
       tuple_types.push_back(hash_map_type_str);
     }
@@ -1289,12 +1605,13 @@ typedef )" + item_content_str + " item_content;";
     auto make_tuple_str = GetTupleStr(multiple_cols, left_key_index_list.size());
     auto make_idarray_str = GetIdArrayStr(cond_check, join_type);
     auto make_list_str = GetListStr(multiple_cols, left_key_index_list.size());
-    auto make_list_content_str = GetListContentStr(multiple_cols, left_key_index_list.size());
+    auto make_list_content_str =
+        GetListContentStr(multiple_cols, left_key_index_list.size());
 
     return BaseCodes() + R"(
+#include <numeric>
 #include "codegen/arrow_compute/ext/array_item_index.h"
 #include "precompile/builder.h"
-#include <numeric>
 using namespace sparkcolumnarplugin::precompile;
 )" + hash_map_include_str +
            R"(
@@ -1324,7 +1641,7 @@ void setpos(int64_t cur_idx, int64_t cur_segment_len, int64_t cur_passed_len) {
 
 item_content value() {
   )" + make_list_content_str +
-R"(}
+           R"(}
 
 bool hasnext() {
  return (passed_len <= total_len_-1);
@@ -1360,8 +1677,7 @@ class TypedProberImpl : public CodeGenBase {
 
   arrow::Status Evaluate(const ArrayList& in) override {
     )" + evaluate_cache_insert_str +
-           evaluate_get_typed_array_str +
-           make_list_str +
+           evaluate_get_typed_array_str + make_list_str +
            R"(
 
     idx_to_arrarid_.push_back(typed_array_0->length());
@@ -1479,6 +1795,182 @@ arrow::Status ConditionedJoinArraysKernel::Make(
   return arrow::Status::OK();
 }
 
+// TODO: enable on multiple keys
+template <typename ArrowType>
+class OperatorConditionedJoinArraysKernel : public ConditionedJoinArraysKernel::Impl {
+ public:
+  OperatorConditionedJoinArraysKernel(
+      arrow::compute::FunctionContext* ctx,
+      const std::vector<std::shared_ptr<arrow::Field>>& left_key_list,
+      const std::vector<std::shared_ptr<arrow::Field>>& right_key_list,
+      const std::shared_ptr<gandiva::Node>& func_node, int join_type,
+      const std::vector<std::shared_ptr<arrow::Field>>& left_field_list,
+      const std::vector<std::shared_ptr<arrow::Field>>& right_field_list,
+      const std::shared_ptr<arrow::Schema>& result_schema)
+      : ctx_(ctx), result_schema(result_schema) {}
+  arrow::Status Evaluate(const ArrayList& in) override {
+    col_num_ = result_schema->num_fields();
+    for (int i = 0; i < col_num_; i++) {
+      cached_[i].push_back(in[i]);
+    }
+    auto typed_array_0 = std::dynamic_pointer_cast<ArrayType>(in[0]);
+    left_list_.emplace_back(typed_array_0);
+    idx_to_arrarid_.push_back(typed_array_0->length());
+    return arrow::Status::OK();
+  }
+
+  arrow::Status MakeResultIterator(
+      std::shared_ptr<arrow::Schema> schema,
+      std::shared_ptr<ResultIterator<arrow::RecordBatch>>* out) override {
+    return arrow::Status::OK();
+  }
+
+ private:
+  // using ArrowType = typename std::tuple_element<0, std::tuple<Args...> >::type;
+  using ArrayType = typename arrow::TypeTraits<ArrowType>::ArrayType;
+  std::vector<std::shared_ptr<ArrayType>> left_list_;
+  std::vector<int64_t> idx_to_arrarid_;
+  arrow::compute::FunctionContext* ctx_;
+  std::shared_ptr<CodeGenBase> prober_;
+  std::string signature_;
+  int col_num_;
+  std::vector<arrow::ArrayVector> cached_;
+  std::shared_ptr<arrow::Schema> result_schema;
+
+  class FVector {
+    using ViewType = decltype(std::declval<ArrayType>().GetView(0));
+
+   public:
+    FVector(std::vector<std::shared_ptr<ArrayType>>* left_list,
+            std::vector<int64_t> segment_info) {
+      left_list_ = left_list;
+      total_len_ = std::accumulate(segment_info.begin(), segment_info.end(), 0);
+      segment_info_ = segment_info;
+      it = (*left_list_)[0];
+      segment_len = 0;
+    }
+
+    void getpos(int64_t* cur_idx, int64_t* cur_segmeng_len, int64_t* passlen) {
+      *cur_idx = idx;
+      *cur_segmeng_len = segment_len;
+      *passlen = passed_len;
+    }
+
+    void setpos(int64_t cur_idx, int64_t cur_segment_len, int64_t cur_passed_len) {
+      idx = cur_idx;
+      it = (*left_list_)[idx];
+      segment_len = cur_segment_len;
+      passed_len = cur_passed_len;
+    }
+
+    ViewType value() { return it->GetView(segment_len); }
+
+    bool hasnext() { return (passed_len <= total_len_ - 1); }
+
+    void next() {
+      segment_len++;
+      if (segment_len == segment_info_[idx] && passed_len != total_len_ - 1) {
+        idx++;
+        segment_len = 0;
+        it = (*left_list_)[idx];
+      }
+      passed_len++;
+    }
+
+   public:
+    std::vector<std::shared_ptr<ArrayType>>* left_list_;
+    int64_t total_len_;
+    std::vector<int64_t> segment_info_;
+
+    int64_t idx = 0;
+    int64_t passed_len = 0;
+    int64_t segment_len = 0;
+    std::shared_ptr<ArrayType> it;
+  };
+
+  class ProberResultIterator : public ResultIterator<arrow::RecordBatch> {
+   public:
+    ProberResultIterator(arrow::compute::FunctionContext* ctx,
+                         std::shared_ptr<arrow::Schema> schema,
+                         std::vector<std::shared_ptr<ArrayType>>* left_list,
+                         std::vector<int64_t>* idx_to_arrarid,
+                         std::vector<arrow::ArrayVector> cached_in)
+        : ctx_(ctx),
+          result_schema_(schema),
+          left_list_(left_list),
+          last_pos(0),
+          idx_to_arrarid_(idx_to_arrarid),
+          cached_in_(cached_in) {
+      AppenderBase::AppenderType appender_type = AppenderBase::left;
+      for (int i = 0; i < col_num_; i++) {
+        auto field = schema->field(i);
+        std::shared_ptr<AppenderBase> appender;
+        MakeAppender(ctx_, field->type(), appender_type, &appender);
+        appender_list_.push_back(appender);
+      }
+      for (int i = 0; i < col_num_; i++) {
+        arrow::ArrayVector array_vector = cached_in_[i];
+        int array_num = array_vector.size();
+        for (int array_id = 0; array_id < array_num; array_id++) {
+          auto arr = array_vector[array_id];
+          appender_list_[i]->AddArray(arr);
+        }
+      }
+      left_it = std::make_shared<FVector>(left_list_, *idx_to_arrarid_);
+    }
+
+    ArrayItemIndex GetArrayItemIdex(std::shared_ptr<FVector> left_it) {
+      int64_t local_arrayid, local_seglen, local_pl;
+      left_it->getpos(&local_arrayid, &local_seglen, &local_pl);
+      return ArrayItemIndex(local_arrayid, local_seglen);
+    }
+
+    arrow::Status Process(const ArrayList& in, std::shared_ptr<arrow::RecordBatch>* out,
+                          const std::shared_ptr<arrow::Array>& selection) override {
+      uint64_t out_length = 0;
+      auto typed_array_0 = std::dynamic_pointer_cast<ArrayType>(in[0]);
+      auto length = typed_array_0->length();
+      for (int i = 0; i < length; i++) {
+        auto right_content = typed_array_0->GetView(i);
+        while (left_it->hasnext() && left_it->value() < right_content) {
+          left_it->next();
+        }
+        while (left_it->hasnext() && left_it->value() == right_content) {
+          auto item = GetArrayItemIdex(left_it);
+
+          for (auto& appender : appender_list_) {
+            RETURN_NOT_OK(appender->Append(item->array_id, item->id));
+          }
+          out_length += 1;
+        }
+      }
+      ArrayList arrays;
+      for (auto& appender : appender_list_) {
+        std::shared_ptr<arrow::Array> out_array;
+        RETURN_NOT_OK(appender->Finish(&out_array));
+        arrays.push_back(out_array);
+        appender->Reset();
+      }
+
+      *out = arrow::RecordBatch::Make(result_schema_, out_length, arrays);
+      return arrow::Status::OK();
+    }
+
+   private:
+    arrow::compute::FunctionContext* ctx_;
+    std::shared_ptr<arrow::Schema> result_schema_;
+    std::vector<std::shared_ptr<ArrayType>>* left_list_;
+    std::shared_ptr<FVector> left_it;
+    int64_t last_pos;
+    int64_t last_idx = 0;
+    int64_t last_seg = 0;
+    int64_t last_pl = 0;
+    std::vector<int64_t>* idx_to_arrarid_;
+    std::vector<arrow::ArrayVector> cached_in_;
+    std::vector<std::shared_ptr<AppenderBase>> appender_list_;
+  };
+};
+
 ConditionedJoinArraysKernel::ConditionedJoinArraysKernel(
     arrow::compute::FunctionContext* ctx,
     const std::vector<std::shared_ptr<arrow::Field>>& left_key_list,
@@ -1487,8 +1979,15 @@ ConditionedJoinArraysKernel::ConditionedJoinArraysKernel(
     const std::vector<std::shared_ptr<arrow::Field>>& left_field_list,
     const std::vector<std::shared_ptr<arrow::Field>>& right_field_list,
     const std::shared_ptr<arrow::Schema>& result_schema) {
-  impl_.reset(new Impl(ctx, left_key_list, right_key_list, func_node, join_type,
-                       left_field_list, right_field_list, result_schema));
+  // using ArrayType = decltype(left_field_list[0]->type());
+  if (left_key_list.size() == 1 && right_key_list.size() == 1) {
+    impl_.reset(new OperatorConditionedJoinArraysKernel<arrow::StringType>(
+        ctx, left_key_list, right_key_list, func_node, join_type, left_field_list,
+        right_field_list, result_schema));
+  } else {
+    impl_.reset(new Impl(ctx, left_key_list, right_key_list, func_node, join_type,
+                         left_field_list, right_field_list, result_schema));
+  }
   kernel_name_ = "ConditionedJoinArraysKernel";
 }
 
@@ -1503,6 +2002,7 @@ arrow::Status ConditionedJoinArraysKernel::MakeResultIterator(
 }
 
 std::string ConditionedJoinArraysKernel::GetSignature() { return impl_->GetSignature(); }
+
 }  // namespace extra
 }  // namespace arrowcompute
 }  // namespace codegen

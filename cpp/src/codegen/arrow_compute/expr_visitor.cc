@@ -352,6 +352,10 @@ arrow::Status ExprVisitor::MakeExprVisitorImpl(
     } else if (child_func_name.compare("ConcatArrayList") == 0) {
       RETURN_NOT_OK(
           ConcatArrayListVisitorImpl::Make(field_list, func_node, ret_fields, p, &impl_));
+    } else if (child_func_name.compare(0, 21, "conditionedJoinArrays") == 0) {
+      std::cout << "here\n";
+      RETURN_NOT_OK(
+          MergeJoinArraysVisitorImpl::Make(field_list, func_node, ret_fields, p, &impl_));
     }
     goto finish;
   }
@@ -685,6 +689,7 @@ arrow::Status ExprVisitor::Init() {
   std::cout << "ExprVisitor::Init " << func_name_ << " ,ptr is " << this << std::endl;
 #endif
   RETURN_NOT_OK(impl_->Init());
+  std::cout << "check\n";
   initialized_ = true;
   if (finish_func_) {
     std::string finish_func_name =
