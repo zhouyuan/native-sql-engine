@@ -55,7 +55,8 @@ TEST(TestArrowComputeMergeJoinWOCG, JoinTestUsingInnerJoin) {
    auto n_result = TreeExprBuilder::MakeFunction(
       "result",
       {TreeExprBuilder::MakeField(table0_f0), TreeExprBuilder::MakeField(table0_f1),
-       TreeExprBuilder::MakeField(table0_f2), TreeExprBuilder::MakeField(table1_f1)},
+       TreeExprBuilder::MakeField(table0_f2), TreeExprBuilder::MakeField(table1_f0),
+       TreeExprBuilder::MakeField(table1_f1)},
       uint32());
   auto n_hash_config = TreeExprBuilder::MakeFunction(
       "build_keys_config_node", {TreeExprBuilder::MakeLiteral((int)0)}, uint32());
