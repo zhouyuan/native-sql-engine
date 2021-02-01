@@ -25,6 +25,7 @@
 #include <gandiva/configuration.h>
 #include <gandiva/node.h>
 #include <gandiva/tree_expr_builder.h>
+#include <gandiva/projector.h>
 #include <sys/file.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -43,6 +44,7 @@
 #include "codegen/arrow_compute/ext/codegen_node_visitor.h"
 #include "codegen/arrow_compute/ext/codegen_register.h"
 #include "codegen/arrow_compute/ext/kernels_ext.h"
+#include "codegen/arrow_compute/ext/typed_node_visitor.h"
 #include "utils/macros.h"
 
 namespace sparkcolumnarplugin {
@@ -137,14 +139,11 @@ class TypedJoinKernel : public ConditionedJoinKernel::Impl {
           std::dynamic_pointer_cast<gandiva::FieldNode>(node)->field());
     }
     result_schema = std::make_shared<arrow::Schema>(result_schema_);
-    
   }
 
   arrow::Status Evaluate(const ArrayList& in) override {
-    //col_num_ = result_schema->num_fields();
     col_num_ = left_field_list_.size();
-    std::cout << "size:" << in.size() << std::endl;
-    std::cout << "col_num_:" << col_num_ << std::endl;
+
     if (cached_.size() <= col_num_) {
       cached_.resize(col_num_);
     }
@@ -274,7 +273,7 @@ class TypedJoinKernel : public ConditionedJoinKernel::Impl {
         MakeAppender(ctx_, field->type(), appender_type, &appender);
         appender_list_.push_back(appender);
       }
-      std::cout << "append list size: " << appender_list_.size() << std::endl;
+
       for (int i = 0; i < left_result_col_num; i++) {
         arrow::ArrayVector array_vector = cached_in_[i];
         int array_num = array_vector.size();
@@ -294,8 +293,7 @@ class TypedJoinKernel : public ConditionedJoinKernel::Impl {
 
     arrow::Status Process(const ArrayList& in, std::shared_ptr<arrow::RecordBatch>* out,
                           const std::shared_ptr<arrow::Array>& selection) override {
-      std::cout << "process size: " << in.size() << std::endl;
-      std::cout << "left size: " << left_result_col_num << std::endl;
+
       for (int i = 0; i < in.size(); i++) {
         appender_list_[i + left_result_col_num]->AddArray(in[i]);
       }
@@ -317,7 +315,6 @@ class TypedJoinKernel : public ConditionedJoinKernel::Impl {
             } else {
               RETURN_NOT_OK(appender->Append(0, i));
             }
-            
           }
           out_length += 1;
           left_it->next();
@@ -340,6 +337,17 @@ class TypedJoinKernel : public ConditionedJoinKernel::Impl {
     }
 
    private:
+    class ProbeFunctionBase {
+     public:
+      virtual ~ProbeFunctionBase() {}
+      virtual uint64_t Evaluate(std::shared_ptr<arrow::Array>) { return 0; }
+      virtual uint64_t Evaluate(std::shared_ptr<arrow::Array>,
+                                const arrow::ArrayVector&) {
+        return 0;
+      }
+    };
+
+   private:
     arrow::compute::FunctionContext* ctx_;
     std::shared_ptr<arrow::Schema> result_schema_;
     std::vector<std::shared_ptr<ArrayType>>* left_list_;
@@ -355,7 +363,20 @@ class TypedJoinKernel : public ConditionedJoinKernel::Impl {
   };
 };
 
-
+#define PROCESS_SUPPORTED_TYPES(PROCESS) \
+  PROCESS(arrow::BooleanType)            \
+  PROCESS(arrow::UInt8Type)              \
+  PROCESS(arrow::Int8Type)               \
+  PROCESS(arrow::UInt16Type)             \
+  PROCESS(arrow::Int16Type)              \
+  PROCESS(arrow::UInt32Type)             \
+  PROCESS(arrow::Int32Type)              \
+  PROCESS(arrow::UInt64Type)             \
+  PROCESS(arrow::Int64Type)              \
+  PROCESS(arrow::FloatType)              \
+  PROCESS(arrow::DoubleType)             \
+  PROCESS(arrow::Date32Type)             \
+  PROCESS(arrow::Date64Type)
 ConditionedJoinKernel::ConditionedJoinKernel(
     arrow::compute::FunctionContext* ctx, const gandiva::NodeVector& left_key_list,
     const gandiva::NodeVector& right_key_list,
@@ -364,10 +385,38 @@ ConditionedJoinKernel::ConditionedJoinKernel(
     int join_type, const gandiva::NodeVector& result_schema,
     const gandiva::NodeVector& hash_configuration_list, int hash_relation_idx) {
   if (left_key_list.size() == 1 && right_key_list.size() == 1) {
-    impl_.reset(new TypedJoinKernel<arrow::UInt32Type>(
-        ctx, left_key_list, right_key_list, left_schema_list,
-                       right_schema_list, condition, join_type, result_schema,
-                       hash_configuration_list, hash_relation_idx));
+    auto key_node = left_key_list[0];
+    std::shared_ptr<TypedNodeVisitor> node_visitor;
+    std::shared_ptr<gandiva::FieldNode> field_node;
+    THROW_NOT_OK(MakeTypedNodeVisitor(key_node, &node_visitor));
+    if (node_visitor->GetResultType() == TypedNodeVisitor::FieldNode) {
+        node_visitor->GetTypedNode(&field_node);
+    }
+    switch (field_node->field()->type()->id()) {
+#define PROCESS(InType)                                                               \
+  case InType::type_id: {                                                             \
+    impl_.reset(new TypedJoinKernel<InType>(                                \
+        ctx, left_key_list, right_key_list, left_schema_list,                 \
+        right_schema_list, condition, join_type, result_schema,              \
+        hash_configuration_list, hash_relation_idx));                        \
+  } break;
+      PROCESS_SUPPORTED_TYPES(PROCESS)
+#undef PROCESS
+      default: {
+        std::cout << "TypedjoinKernel type not supported, type is "
+                  << field_node->field()->type() << std::endl;
+      } break;
+    }
+    //using type = decltype(field_node->field()->type()->id());
+    //constexpr auto type = field_node->field()->type()->id();
+    //using keytype = precompile::TypeIdTraits<type>::Type;
+    //using keytype = precompile::TypeIdTraits<arrow::Type::UINT32>::Type;
+    //using keytype = typename precompile::TypeTraits<InType>::ArrayType; 
+    //impl_.reset(new TypedJoinKernel<arrow::UInt32Type>(
+      // impl_.reset(new TypedJoinKernel<keytype>(
+      //   ctx, left_key_list, right_key_list, left_schema_list,
+      //                  right_schema_list, condition, join_type, result_schema,
+      //                  hash_configuration_list, hash_relation_idx));
   } else {
   impl_.reset(new Impl(ctx, left_key_list, right_key_list, left_schema_list,
                        right_schema_list, condition, join_type, result_schema,
