@@ -29,7 +29,9 @@ jobs:
         uses: actions/setup-java@v1
         with:
           java-version: 1.8
-      - run: sudo apt-get install cmake libboost-all-dev
+      - name: install deps
+        run: |
+          sudo apt-get install cmake libboost-all-dev
       - name: Install OAP optimized Arrow
         run: |
           cd /tmp
