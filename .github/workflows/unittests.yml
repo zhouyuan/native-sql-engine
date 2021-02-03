@@ -29,11 +29,9 @@ jobs:
         uses: actions/setup-java@v1
         with:
           java-version: 1.8
-      - name: install deps
-        run: |
-          sudo apt-get install cmake libboost-all-dev
       - name: Install OAP optimized Arrow
         run: |
+          sudo apt-get install cmake libboost-all-dev
           cd /tmp
           git clone https://github.com/intel-bigdata/arrow.git
           cd arrow && git checkout oap-master && cd cpp
