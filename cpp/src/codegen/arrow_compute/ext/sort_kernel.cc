@@ -514,8 +514,8 @@ extern "C" void MakeCodeGen(arrow::compute::FunctionContext* ctx,
     } else {
       projected = false;
     }
-    ss << "auto comp_without_null = [this](ArrayItemIndexS x, ArrayItemIndexS y) {"
-       << GetCompFunction_Without_Null_(0, projected, sort_key_index_list, key_field_list,
+    ss << "auto comp_without_null = [this](ArrayItemIndexS x) {"
+       << GetCompFunction_Without_Null_ska(0, projected, sort_key_index_list, key_field_list,
                            projected_types, sort_directions)
        << "};\n";
     return ss.str();
@@ -643,6 +643,43 @@ extern "C" void MakeCodeGen(arrow::compute::FunctionContext* ctx,
        << "} else { " << comp_str << "}";
     return ss.str();
   }
+  std::string GetCompFunction_Without_Null_Tuple(
+      int cur_key_index, bool projected, const std::vector<int>& sort_key_index_list,
+      const std::vector<std::shared_ptr<arrow::Field>>& key_field_list,
+      const std::vector<std::shared_ptr<arrow::DataType>>& projected_types,
+      const std::vector<bool>& sort_directions) {
+
+    std::string left_tuple =  "std::forward_as_tuple(";
+    std::string right_tuple = "std::forward_as_tuple(";
+      for (auto i = 0 ; i<sort_key_index_list.size(); i++) {
+        if (i == sort_key_index_list.size() -1) {
+        left_tuple += "projected_" + std::to_string(i)  + "_[x.array_id]->GetView(x.id))";
+        right_tuple += "projected_" + std::to_string(i)  + "_[y.array_id]->GetView(y.id))";
+        } else {
+        left_tuple += "projected_" + std::to_string(i) + "_[x.array_id]->GetView(x.id),";
+        right_tuple += "projected_" + std::to_string(i) + "_[y.array_id]->GetView(y.id),";
+        }
+      }
+
+      return "return " + left_tuple + "<" + right_tuple + ";";
+    }
+  std::string GetCompFunction_Without_Null_ska(
+      int cur_key_index, bool projected, const std::vector<int>& sort_key_index_list,
+      const std::vector<std::shared_ptr<arrow::Field>>& key_field_list,
+      const std::vector<std::shared_ptr<arrow::DataType>>& projected_types,
+      const std::vector<bool>& sort_directions) {
+
+    std::string left_tuple =  "std::forward_as_tuple(";
+
+      for (auto i = 0 ; i<sort_key_index_list.size(); i++) {
+        if (i == sort_key_index_list.size() -1) {
+        left_tuple += "projected_" + std::to_string(i)  + "_[x.array_id]->GetView(x.id));";
+        } else {
+        left_tuple += "projected_" + std::to_string(i) + "_[x.array_id]->GetView(x.id),";
+        }
+      }
+      return "return " + left_tuple;
+    }
   std::string GetCompFunction_Without_Null_(
       int cur_key_index, bool projected, const std::vector<int>& sort_key_index_list,
       const std::vector<std::shared_ptr<arrow::Field>>& key_field_list,
@@ -767,7 +804,7 @@ extern "C" void MakeCodeGen(arrow::compute::FunctionContext* ctx,
     std::stringstream ss;
     ss << "if (has_null_) {\n"
        << "gfx::timsort(indices_begin, indices_begin + items_total_, comp);} else {\n" 
-       << "gfx::timsort(indices_begin, indices_begin + items_total_, comp_without_null);}"
+       << "ska_sort(indices_begin, indices_begin + items_total_, comp_without_null);}"
        << std::endl;
     return ss.str();
   }
