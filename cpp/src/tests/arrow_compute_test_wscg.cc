@@ -3783,7 +3783,7 @@ TEST(TestArrowComputeWSCG, WSCGTestAggregate) {
 
   /////////////////////// Create Expression Evaluator ////////////////////
   std::shared_ptr<CodeGenerator> expr;
-  arrow::compute::FunctionContext ctx;
+  arrow::compute::ExecContext ctx;
   ASSERT_NOT_OK(
       CreateCodeGenerator(ctx.memory_pool(), sch, expr_vector, ret_types, &expr, true));
   std::shared_ptr<arrow::RecordBatch> input_batch;
@@ -3877,7 +3877,7 @@ TEST(TestArrowComputeWSCG, WSCGTestGroupbyHashAggregateTwoKeys) {
 
   /////////////////////// Create Expression Evaluator ////////////////////
   std::shared_ptr<CodeGenerator> expr;
-  arrow::compute::FunctionContext ctx;
+  arrow::compute::ExecContext ctx;
   ASSERT_NOT_OK(
       CreateCodeGenerator(ctx.memory_pool(), sch, expr_vector, ret_types, &expr, true));
   std::shared_ptr<arrow::RecordBatch> input_batch;
@@ -4002,7 +4002,7 @@ TEST(TestArrowComputeWSCG, WSCGTestGroupbyHashAggregate) {
 
   /////////////////////// Create Expression Evaluator ////////////////////
   std::shared_ptr<CodeGenerator> expr;
-  arrow::compute::FunctionContext ctx;
+  arrow::compute::ExecContext ctx;
   ASSERT_NOT_OK(
       CreateCodeGenerator(ctx.memory_pool(), sch, expr_vector, ret_types, &expr, true));
   std::shared_ptr<arrow::RecordBatch> input_batch;
@@ -4128,7 +4128,7 @@ TEST(TestArrowComputeWSCG, WSCGTestInnerJoinWithGroupbyAggregate) {
   auto n_hash = TreeExprBuilder::MakeFunction("standalone", {n_hash_kernel}, uint32());
   auto hashRelation_expr = TreeExprBuilder::MakeExpression(n_hash, f_res);
   std::shared_ptr<CodeGenerator> expr_build;
-  arrow::compute::FunctionContext ctx;
+  arrow::compute::ExecContext ctx;
   ASSERT_NOT_OK(CreateCodeGenerator(ctx.memory_pool(), schema_table_0,
                                     {hashRelation_expr}, {}, &expr_build, true));
   std::shared_ptr<CodeGenerator> expr_probe;
@@ -4265,7 +4265,7 @@ TEST(TestArrowComputeWSCG, WSCGTestStringMergeInnerJoinWithGroupbyAggregate) {
   auto schema_table =
       arrow::schema({table0_f0, table0_f1, table0_f2, table1_f0, table1_f1});
   std::shared_ptr<CodeGenerator> expr_join;
-  arrow::compute::FunctionContext ctx;
+  arrow::compute::ExecContext ctx;
   auto res_sch =
       arrow::schema({table0_f2_unique, table1_f1_sum, table1_f1_count, table1_f1_min});
   ASSERT_NOT_OK(CreateCodeGenerator(
