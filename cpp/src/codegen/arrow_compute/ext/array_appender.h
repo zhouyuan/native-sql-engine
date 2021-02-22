@@ -93,6 +93,7 @@ class ArrayAppender<DataType, enable_if_number_or_date<DataType>> : public Appen
     arrow::MakeBuilder(ctx_->memory_pool(), arrow::TypeTraits<DataType>::type_singleton(),
                        &array_builder);
     builder_.reset(arrow::internal::checked_cast<BuilderType_*>(array_builder.release()));
+    builder_->Reserve(20480);
   }
   ~ArrayAppender() {}
 
@@ -113,9 +114,9 @@ class ArrayAppender<DataType, enable_if_number_or_date<DataType>> : public Appen
   arrow::Status Append(const uint16_t& array_id, const uint16_t& item_id) override {
     if (has_null_ && cached_arr_[array_id]->null_count() > 0 && 
         cached_arr_[array_id]->IsNull(item_id)) {
-      RETURN_NOT_OK(builder_->AppendNull());
+      builder_->UnsafeAppendNull();
     } else {
-      RETURN_NOT_OK(builder_->Append(cached_arr_[array_id]->GetView(item_id)));
+      builder_->UnsafeAppend(cached_arr_[array_id]->GetView(item_id));
     }
     return arrow::Status::OK();
   }
@@ -139,9 +140,9 @@ class ArrayAppender<DataType, enable_if_number_or_date<DataType>> : public Appen
     for (auto tmp : index_list) {
       if (has_null_ && cached_arr_[tmp.array_id]->null_count() > 0 && 
           cached_arr_[tmp.array_id]->IsNull(tmp.id)) {
-        RETURN_NOT_OK(builder_->AppendNull());
+        builder_->UnsafeAppendNull();
       } else {
-        RETURN_NOT_OK(builder_->Append(cached_arr_[tmp.array_id]->GetView(tmp.id)));
+        builder_->UnsafeAppend(cached_arr_[tmp.array_id]->GetView(tmp.id));
       }
     }
     return arrow::Status::OK();
